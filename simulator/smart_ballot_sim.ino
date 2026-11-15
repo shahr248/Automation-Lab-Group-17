@@ -1,237 +1,220 @@
-// ==========================================
-// Smart Ballot System - Automation Lab 1
-// Simulator version (Tinkercad)
-// Digital scale -> Force Sensor, RFID card -> IR remote
-// I2C LCD -> regular 16x2 LCD (I2C LCD conflicts with IRremote in Tinkercad)
-// ==========================================
+// מערכת קלפי חכמה - מעבדת אוטומציה 1
+// גרסת סימולטור (Tinkercad)
+// בסימולטור: חיישן כוח במקום משקל, שלט IR במקום RFID, מסך LCD רגיל במקום I2C
 
-// ----- Libraries -----
 #include <LiquidCrystal.h>
 #include <IRremote.h>
-// Note: Servo.h is not used - it shares a timer with IRremote,
-// so the servo is driven with manual pulses (see updateServo)
+// לא משתמשים ב-Servo.h כי הוא מתנגש בטיימר עם IRremote
 
-// ----- Pin definitions -----
-#define BUTTON_PIN 2
+// פינים
+#define BTN_PIN 2
 #define IR_PIN 3
 #define SERVO_PIN 5
 #define LED_PIN 7
-#define WEIGHT_PIN A0
-#define LCD_RS 12
-#define LCD_EN 11
-#define LCD_D4 10
-#define LCD_D5 9
-#define LCD_D6 8
-#define LCD_D7 6
+#define FSR_PIN A0
 
-// ----- Constants -----
-#define WEIGHT_ENTER_LEVEL 300   // reading above this = voter inside
-#define WEIGHT_EXIT_LEVEL 200    // reading below this = booth empty
-#define GATE_CLOSED_ANGLE 0
-#define GATE_OPEN_ANGLE 90
-#define CARD_TIMEOUT_MS 10000    // time to enter after card scan
-#define ALERT_DURATION_MS 3000   // length of the GO! alert
-#define BLINK_INTERVAL_MS 300    // LED blink speed during alert
-#define SERVO_PERIOD_MS 20       // servo needs a pulse every 20 ms
+// ספי משקל (ערך אנלוגי 0-1023)
+#define ENTER_LEVEL 300
+#define EXIT_LEVEL 200
 
-// ----- System states -----
-#define STATE_FREE 0
-#define STATE_CARD_OK 1
-#define STATE_OCCUPIED 2
+// זוויות מחסום
+#define GATE_CLOSED 0
+#define GATE_OPEN 90
 
-// ----- Objects -----
-LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
+// זמנים במילישניות
+#define CARD_TIMEOUT 10000
+#define ALERT_TIME 3000
+#define BLINK_TIME 300
 
-// ----- Variables -----
-int systemState = STATE_FREE;
-int voterCount = 0;
-int lastButtonState = LOW;
-bool alertActive = false;
-bool ledBlinkState = false;
-unsigned long alertStartTime = 0;
-unsigned long lastBlinkTime = 0;
+// מצבי הקלפי
+#define FREE 0
+#define CARD_OK 1
+#define BUSY 2
+
+LiquidCrystal lcd(12, 11, 10, 9, 8, 6);
+
+int state = FREE;
+int voters = 0;
+int lastBtn = LOW;
+bool alertOn = false;
+bool ledOn = false;
+unsigned long alertStart = 0;
+unsigned long lastBlink = 0;
 unsigned long cardTime = 0;
-int gateAngle = GATE_CLOSED_ANGLE;
-unsigned long lastServoPulse = 0;
+int gateAngle = GATE_CLOSED;
+unsigned long lastPulse = 0;
 
-// Runs once: sets up all components and shows GO
+// אתחול רכיבים
 void setup() {
   Serial.begin(9600);
-  pinMode(BUTTON_PIN, INPUT);
+  pinMode(BTN_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
-  pinMode(WEIGHT_PIN, INPUT);
+  pinMode(FSR_PIN, INPUT);
   pinMode(SERVO_PIN, OUTPUT);
   IrReceiver.begin(IR_PIN);
   lcd.begin(16, 2);
-  setFreeState();
-  Serial.println("Smart ballot system ready");
+  setFree();
+  Serial.println("System ready");
 }
 
-// Main loop: checks every input, no blocking code
+// לולאה ראשית - רק קריאה לפונקציות
 void loop() {
-  checkCard();
-  checkWeight();
-  checkButton();
-  checkCardTimeout();
-  updateAlert();
-  updateServo();
+  readCard();
+  readWeight();
+  readButton();
+  checkTimeout();
+  blinkAlert();
+  moveServo();
   delay(10);
 }
 
-// ===== Functions =====
-
-// Reads the IR receiver - a remote key press = voter card scan
-void checkCard() {
+// קריאת כרטיס בוחר מהשלט
+void readCard() {
   if (!IrReceiver.decode()) {
     return;
   }
-  int cardId = IrReceiver.decodedIRData.command;
+  int card = IrReceiver.decodedIRData.command;
   IrReceiver.resume();
-  if (systemState == STATE_FREE) {
+
+  if (state == FREE) {
     Serial.print("Card ");
-    Serial.print(cardId);
-    Serial.println(" accepted - gate open");
-    systemState = STATE_CARD_OK;
+    Serial.print(card);
+    Serial.println(" OK - gate open");
+    state = CARD_OK;
     cardTime = millis();
     stopAlert();
-    setGate(GATE_OPEN_ANGLE);
-    showMessage("Card OK", "Please enter");
+    gateAngle = GATE_OPEN;
+    showText("Card OK", "Please enter");
   } else {
     Serial.print("Card ");
-    Serial.print(cardId);
-    Serial.println(" rejected - booth not free");
+    Serial.print(card);
+    Serial.println(" rejected - booth busy");
   }
 }
 
-// Reads the weight sensor and updates the booth state
-void checkWeight() {
-  int weight = analogRead(WEIGHT_PIN);
-  if (systemState != STATE_OCCUPIED && weight > WEIGHT_ENTER_LEVEL) {
-    if (systemState == STATE_FREE) {
-      Serial.println("Warning: voter entered without card scan");
+// בדיקת משקל - האם יש בוחר בקלפי
+void readWeight() {
+  int w = analogRead(FSR_PIN);
+
+  if (state != BUSY && w > ENTER_LEVEL) {
+    if (state == FREE) {
+      Serial.println("Warning: entered without card");
     }
-    setOccupiedState(weight);
-  } else if (systemState == STATE_OCCUPIED && weight < WEIGHT_EXIT_LEVEL) {
-    Serial.print("Voter left (weight=");
-    Serial.print(weight);
-    Serial.println(") - booth free");
-    setFreeState();
+    setBusy(w);
+  } else if (state == BUSY && w < EXIT_LEVEL) {
+    Serial.print("Voter left, weight=");
+    Serial.println(w);
+    setFree();
   }
 }
 
-// Staff button: sends a GO! alert when the booth is free
-void checkButton() {
-  int buttonState = digitalRead(BUTTON_PIN);
-  if (buttonState == HIGH && lastButtonState == LOW) {
-    if (systemState == STATE_FREE) {
-      Serial.println("Staff alert: GO!");
+// כפתור נציג - התראת GO! כשהקלפי פנויה
+void readButton() {
+  int btn = digitalRead(BTN_PIN);
+
+  if (btn == HIGH && lastBtn == LOW) {
+    if (state == FREE) {
+      Serial.println("Alert: GO!");
       startAlert();
     } else {
-      Serial.println("Staff alert ignored - booth not free");
+      Serial.println("Alert ignored - booth busy");
     }
   }
-  lastButtonState = buttonState;
+  lastBtn = btn;
 }
 
-// Closes the gate if the voter did not enter in time
-void checkCardTimeout() {
-  if (systemState == STATE_CARD_OK && millis() - cardTime >= CARD_TIMEOUT_MS) {
-    Serial.println("No entry after card scan - gate closed");
-    setFreeState();
+// אם הבוחר לא נכנס בזמן - סוגרים את המחסום
+void checkTimeout() {
+  if (state == CARD_OK && millis() - cardTime >= CARD_TIMEOUT) {
+    Serial.println("Timeout - gate closed");
+    setFree();
   }
 }
 
-// Booth occupied: LED on, LCD WAIT, count voter, close gate
-void setOccupiedState(int weight) {
-  systemState = STATE_OCCUPIED;
+// קלפי תפוסה: נורה דולקת, WAIT, מונה עולה
+void setBusy(int w) {
+  state = BUSY;
   stopAlert();
-  voterCount++;
+  voters++;
   digitalWrite(LED_PIN, HIGH);
-  setGate(GATE_CLOSED_ANGLE);
+  gateAngle = GATE_CLOSED;
   showStatus("WAIT");
-  Serial.print("Voter inside (weight=");
-  Serial.print(weight);
-  Serial.print(") - total voters: ");
-  Serial.println(voterCount);
+  Serial.print("Voter inside, weight=");
+  Serial.print(w);
+  Serial.print(", voters=");
+  Serial.println(voters);
 }
 
-// Booth free: LED off, LCD GO, gate closed
-void setFreeState() {
-  systemState = STATE_FREE;
+// קלפי פנויה: נורה כבויה, GO
+void setFree() {
+  state = FREE;
   stopAlert();
   digitalWrite(LED_PIN, LOW);
-  setGate(GATE_CLOSED_ANGLE);
+  gateAngle = GATE_CLOSED;
   showStatus("GO");
 }
 
-// Starts the blinking GO! alert
+// התחלת התראה מהבהבת
 void startAlert() {
-  alertActive = true;
-  alertStartTime = millis();
-  lastBlinkTime = millis();
-  ledBlinkState = true;
+  alertOn = true;
+  alertStart = millis();
+  lastBlink = millis();
+  ledOn = true;
   digitalWrite(LED_PIN, HIGH);
   showStatus("GO!");
 }
 
-// Blinks the LED during the alert and ends it after the set time
-void updateAlert() {
-  if (!alertActive) {
+// הבהוב הנורה בזמן ההתראה
+void blinkAlert() {
+  if (!alertOn) {
     return;
   }
-  if (millis() - alertStartTime >= ALERT_DURATION_MS) {
+  if (millis() - alertStart >= ALERT_TIME) {
     stopAlert();
     showStatus("GO");
     Serial.println("Alert ended");
     return;
   }
-  if (millis() - lastBlinkTime >= BLINK_INTERVAL_MS) {
-    lastBlinkTime = millis();
-    ledBlinkState = !ledBlinkState;
-    digitalWrite(LED_PIN, ledBlinkState);
+  if (millis() - lastBlink >= BLINK_TIME) {
+    lastBlink = millis();
+    ledOn = !ledOn;
+    digitalWrite(LED_PIN, ledOn);
   }
 }
 
-// Stops the alert and turns the LED off
+// עצירת ההתראה
 void stopAlert() {
-  if (alertActive) {
-    alertActive = false;
+  if (alertOn) {
+    alertOn = false;
     digitalWrite(LED_PIN, LOW);
   }
 }
 
-// Sets the gate (servo) target angle
-void setGate(int angle) {
-  gateAngle = angle;
-}
-
-// Sends one control pulse to the servo every 20 ms
-void updateServo() {
-  if (millis() - lastServoPulse < SERVO_PERIOD_MS) {
+// פולס לסרוו כל 20 מילישניות
+void moveServo() {
+  if (millis() - lastPulse < 20) {
     return;
   }
-  lastServoPulse = millis();
-  int pulseWidth = map(gateAngle, 0, 180, 544, 2400);
+  lastPulse = millis();
+  int pulse = map(gateAngle, 0, 180, 544, 2400);
   digitalWrite(SERVO_PIN, HIGH);
-  delayMicroseconds(pulseWidth);
+  delayMicroseconds(pulse);
   digitalWrite(SERVO_PIN, LOW);
 }
 
-// Shows booth status on line 1 and voter count on line 2
-void showStatus(String status) {
+// מצב הקלפי בשורה 1, מספר בוחרים בשורה 2
+void showStatus(String s) {
   lcd.clear();
-  lcd.setCursor(0, 0);
   lcd.print("Ballot: ");
-  lcd.print(status);
+  lcd.print(s);
   lcd.setCursor(0, 1);
   lcd.print("Voters: ");
-  lcd.print(voterCount);
+  lcd.print(voters);
 }
 
-// Shows two lines of free text on the LCD
-void showMessage(String line1, String line2) {
+// הצגת שתי שורות טקסט
+void showText(String line1, String line2) {
   lcd.clear();
-  lcd.setCursor(0, 0);
   lcd.print(line1);
   lcd.setCursor(0, 1);
   lcd.print(line2);
