@@ -7,6 +7,7 @@
 
 // פינים
 #define BTN_PIN 2
+#define OPEN_BTN_PIN 4
 #define IR_PIN 3
 #define SERVO_PIN 5
 #define LED_PIN 7
@@ -29,6 +30,7 @@
 // זמנים
 #define CARD_TIMEOUT 10000
 #define EXIT_TIME 5000
+#define MANUAL_TIME 2000
 #define ALERT_TIME 3000
 #define BLINK_TIME 300
 #define WEIGHT_EVERY 200
@@ -48,6 +50,7 @@ Servo gate;
 int state = FREE;
 int voters = 0;
 int lastBtn = !BTN_PRESSED;
+int lastOpenBtn = !BTN_PRESSED;
 bool alertOn = false;
 bool ledOn = false;
 unsigned long alertStart = 0;
@@ -55,15 +58,19 @@ unsigned long lastBlink = 0;
 unsigned long cardTime = 0;
 unsigned long lastWeight = 0;
 float weight = 0;
-int gatePos = GATE_CLOSED;
 int gateTarget = GATE_CLOSED;
 unsigned long gateStart = 0;
+unsigned long moveTime = GATE_MOVE_TIME;
+bool moving = false;
 bool exitOpen = false;
+bool noCard = false;
 unsigned long exitStart = 0;
+unsigned long exitDuration = EXIT_TIME;
 
 void setup() {
   Serial.begin(9600);
   pinMode(BTN_PIN, INPUT_PULLUP);
+  pinMode(OPEN_BTN_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
 
   startLcd();
@@ -85,6 +92,7 @@ void loop() {
   readCard();
   readWeight();
   readButton();
+  readOpenButton();
   checkTimeout();
   blinkAlert();
   moveGate();
@@ -125,21 +133,28 @@ void readCard() {
   }
 }
 
-// בדיקת משקל - כניסה ויציאה
+// בדיקת משקל - נספר רק מי שהעביר כרטיס
 void readWeight() {
   if (millis() - lastWeight < WEIGHT_EVERY) return;
   if (!scale.is_ready()) return;
   lastWeight = millis();
   weight = scale.get_units(1);
 
-  if (state != BUSY && weight > ENTER_LEVEL) {
-    if (state == FREE) Serial.println("Warning: entered without card");
+  if (state == CARD_OK && weight > ENTER_LEVEL) {
     setBusy();
+  } else if (state == FREE && weight > ENTER_LEVEL && !noCard) {
+    noCard = true;
+    Serial.println("Warning: entered without card");
+    showText("No card!", "Please exit");
+  } else if (state == FREE && noCard && weight < EXIT_LEVEL) {
+    noCard = false;
+    showStatus("GO");
   } else if (state == BUSY && weight < EXIT_LEVEL) {
     Serial.print("Voter left, weight=");
     Serial.println(weight);
     setFree();
-    openForExit();
+    openForExit(EXIT_TIME);
+    showText("Thank you!", "Please exit");
   }
 }
 
@@ -157,13 +172,24 @@ void readButton() {
   lastBtn = btn;
 }
 
+// כפתור מזכיר - פותח את המחסום ל-2 שניות
+void readOpenButton() {
+  int btn = digitalRead(OPEN_BTN_PIN);
+  if (btn == BTN_PRESSED && lastOpenBtn != BTN_PRESSED) {
+    Serial.println("Manual open");
+    openForExit(MANUAL_TIME);
+    showText("Gate open", "Please exit");
+  }
+  lastOpenBtn = btn;
+}
+
 // סגירת מחסום אחרי זמן
 void checkTimeout() {
   if (state == CARD_OK && millis() - cardTime >= CARD_TIMEOUT) {
     Serial.println("Timeout - gate closed");
     setFree();
   }
-  if (exitOpen && millis() - exitStart >= EXIT_TIME) {
+  if (exitOpen && millis() - exitStart >= exitDuration) {
     exitOpen = false;
     Serial.println("Exit done - gate closed");
     setGate(GATE_CLOSED);
@@ -172,11 +198,11 @@ void checkTimeout() {
 }
 
 // פתיחה ליציאה
-void openForExit() {
+void openForExit(unsigned long duration) {
   exitOpen = true;
   exitStart = millis();
+  exitDuration = duration;
   setGate(GATE_OPEN);
-  showText("Thank you!", "Please exit");
   Serial.println("Gate open for exit");
 }
 
@@ -184,6 +210,7 @@ void openForExit() {
 void setBusy() {
   state = BUSY;
   exitOpen = false;
+  noCard = false;
   stopAlert();
   voters++;
   digitalWrite(LED_PIN, HIGH);
@@ -240,18 +267,22 @@ void stopAlert() {
 
 // הזזת מחסום
 void setGate(int target) {
-  if (target == gatePos) return;
+  if (target == gateTarget) return;
+  // אם המחסום באמצע תנועה, חוזרים רק את הדרך שכבר עבר
+  if (moving) moveTime = millis() - gateStart;
+  else moveTime = GATE_MOVE_TIME;
   gateTarget = target;
   gateStart = millis();
+  moving = true;
   gate.write(target == GATE_OPEN ? SERVO_OPEN : SERVO_CLOSE);
 }
 
 // עצירת המנוע
 void moveGate() {
-  if (gatePos == gateTarget) return;
-  if (millis() - gateStart >= GATE_MOVE_TIME) {
+  if (!moving) return;
+  if (millis() - gateStart >= moveTime) {
     gate.write(SERVO_STOP);
-    gatePos = gateTarget;
+    moving = false;
   }
 }
 
