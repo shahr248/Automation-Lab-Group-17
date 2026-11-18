@@ -1,10 +1,10 @@
-# Automation_lab_1
+# מעבדת אוטומציה - קבוצה 17
 
 AlonGoldman
 ShaharBenNir
 
-## Simulator (Tinkercad)
+## תרגיל 1 - קלפי חכמה
 
-https://www.tinkercad.com/things/6sqxEQyBPiq-automationlab1
+קוד וסימולציה: [תרגיל 1](%D7%AA%D7%A8%D7%92%D7%99%D7%9C%201)
 
-Code: [simulator/smart_ballot_sim.ino](simulator/smart_ballot_sim.ino)
+טינקרקד: https://www.tinkercad.com/things/6sqxEQyBPiq-automationlab1
