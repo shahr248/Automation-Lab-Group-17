@@ -101,6 +101,7 @@ void loop() {
 // הדלקת המסך
 void startLcd() {
   Wire.begin();
+  Wire.setWireTimeout(3000, true);  // שלא ייתקע אם המסך לא עונה
   byte addr = 0x27;
   Wire.beginTransmission(0x27);
   if (Wire.endTransmission() != 0) addr = 0x3F;
