@@ -1,120 +1,144 @@
-// מערכת קלפי חכמה - מעבדת אוטומציה 1
-// גרסת סימולטור (Tinkercad)
-// בסימולטור: חיישן כוח במקום משקל, שלט IR במקום RFID, מסך LCD רגיל במקום I2C
-
+// קלפי חכמה - מעבדת אוטומציה 1 (סימולטור)
+// אותה לוגיקה כמו בחומרה. ההבדלים: מסך רגיל, חיישן כוח במקום HX711, סרוו רגיל במקום 360
 #include <LiquidCrystal.h>
 #include <IRremote.h>
-// לא משתמשים ב-Servo.h כי הוא מתנגש בטיימר עם IRremote
 
 // פינים
 #define BTN_PIN 2
 #define IR_PIN 3
+#define OPEN_BTN_PIN 4
 #define SERVO_PIN 5
 #define LED_PIN 7
 #define FSR_PIN A0
 
-// ספי משקל (ערך אנלוגי 0-1023)
+// משקל (0-1023)
 #define ENTER_LEVEL 300
 #define EXIT_LEVEL 200
 
-// זוויות מחסום
-#define GATE_CLOSED 0
-#define GATE_OPEN 90
+// כפתור GO מחובר עם נגד למינוס (לחיצה = HIGH), כפתור המזכיר למינוס בלי נגד
+#define BTN_PRESSED HIGH
+#define OPEN_PRESSED LOW
 
-// זמנים במילישניות
+// זוויות מחסום (בסימולטור הסרוו רגיל)
+#define ANGLE_CLOSED 0
+#define ANGLE_OPEN 90
+
+// זמנים
 #define CARD_TIMEOUT 10000
+#define EXIT_TIME 5000
+#define MANUAL_TIME 2000
 #define ALERT_TIME 3000
 #define BLINK_TIME 300
+#define WEIGHT_EVERY 200
 
-// מצבי הקלפי
+// מצבים
 #define FREE 0
 #define CARD_OK 1
 #define BUSY 2
+
+#define GATE_CLOSED 0
+#define GATE_OPEN 1
 
 LiquidCrystal lcd(12, 11, 10, 9, 8, 6);
 
 int state = FREE;
 int voters = 0;
-int lastBtn = LOW;
+int lastBtn = !BTN_PRESSED;
+int lastOpenBtn = !OPEN_PRESSED;
 bool alertOn = false;
 bool ledOn = false;
 unsigned long alertStart = 0;
 unsigned long lastBlink = 0;
 unsigned long cardTime = 0;
-int gateAngle = GATE_CLOSED;
+unsigned long lastWeight = 0;
+int weight = 0;
+int gateTarget = GATE_CLOSED;
 unsigned long lastPulse = 0;
+bool exitOpen = false;
+bool noCard = false;
+unsigned long exitStart = 0;
+unsigned long exitDuration = EXIT_TIME;
 
-// אתחול רכיבים
 void setup() {
   Serial.begin(9600);
   pinMode(BTN_PIN, INPUT);
+  pinMode(OPEN_BTN_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
-  pinMode(FSR_PIN, INPUT);
   pinMode(SERVO_PIN, OUTPUT);
+
+  startLcd();
+
   IrReceiver.begin(IR_PIN);
-  lcd.begin(16, 2);
+
   setFree();
   Serial.println("System ready");
 }
 
-// לולאה ראשית - רק קריאה לפונקציות
 void loop() {
   readCard();
   readWeight();
   readButton();
+  readOpenButton();
   checkTimeout();
   blinkAlert();
-  moveServo();
-  delay(10);
+  moveGate();
 }
 
-// קריאת כרטיס בוחר מהשלט
+// הדלקת המסך
+void startLcd() {
+  lcd.begin(16, 2);
+}
+
+// שלט במקום כרטיס
 void readCard() {
-  if (!IrReceiver.decode()) {
-    return;
-  }
+  if (!IrReceiver.decode()) return;
   int card = IrReceiver.decodedIRData.command;
   IrReceiver.resume();
 
   if (state == FREE) {
-    Serial.print("Card ");
-    Serial.print(card);
-    Serial.println(" OK - gate open");
+    Serial.println("Card " + String(card) + " OK - gate open");
     state = CARD_OK;
     cardTime = millis();
+    exitOpen = false;
     stopAlert();
-    gateAngle = GATE_OPEN;
+    setGate(GATE_OPEN);
     showText("Card OK", "Please enter");
   } else {
-    Serial.print("Card ");
-    Serial.print(card);
-    Serial.println(" rejected - booth busy");
+    Serial.println("Card " + String(card) + " rejected - booth busy");
   }
 }
 
-// בדיקת משקל - האם יש בוחר בקלפי
+// בדיקת משקל - נספר רק מי שהעביר כרטיס
 void readWeight() {
-  int w = analogRead(FSR_PIN);
+  if (millis() - lastWeight < WEIGHT_EVERY) return;
+  lastWeight = millis();
+  weight = analogRead(FSR_PIN);
 
-  if (state != BUSY && w > ENTER_LEVEL) {
-    if (state == FREE) {
-      Serial.println("Warning: entered without card");
-    }
-    setBusy(w);
-  } else if (state == BUSY && w < EXIT_LEVEL) {
+  if (state == CARD_OK && weight > ENTER_LEVEL) {
+    setBusy();
+  } else if (state == FREE && weight > ENTER_LEVEL && !noCard) {
+    noCard = true;
+    Serial.println("Warning: entered without card");
+    showText("No card!", "Please exit");
+  } else if (state == FREE && noCard && weight < EXIT_LEVEL) {
+    noCard = false;
+    showStatus("GO");
+  } else if (state == BUSY && weight < EXIT_LEVEL) {
     Serial.print("Voter left, weight=");
-    Serial.println(w);
+    Serial.println(weight);
     setFree();
+    openForExit(EXIT_TIME);
+    showText("Thank you!", "Please exit");
   }
 }
 
-// כפתור נציג - התראת GO! כשהקלפי פנויה
+// כפתור צוות - עובד כל עוד אין מישהו בפנים
 void readButton() {
   int btn = digitalRead(BTN_PIN);
-
-  if (btn == HIGH && lastBtn == LOW) {
-    if (state == FREE) {
+  if (btn == BTN_PRESSED && lastBtn != BTN_PRESSED) {
+    if (state != BUSY) {
       Serial.println("Alert: GO!");
+      if (state == CARD_OK) cardTime = millis();  // עוד זמן להיכנס
       startAlert();
     } else {
       Serial.println("Alert ignored - booth busy");
@@ -123,55 +147,82 @@ void readButton() {
   lastBtn = btn;
 }
 
-// אם הבוחר לא נכנס בזמן - סוגרים את המחסום
+// כפתור מזכיר - פותח את המחסום ל-2 שניות
+void readOpenButton() {
+  int btn = digitalRead(OPEN_BTN_PIN);
+  if (btn == OPEN_PRESSED && lastOpenBtn != OPEN_PRESSED) {
+    Serial.println("Manual open");
+    openForExit(MANUAL_TIME);
+    showText("Gate open", "Please exit");
+  }
+  lastOpenBtn = btn;
+}
+
+// סגירת מחסום אחרי זמן
 void checkTimeout() {
   if (state == CARD_OK && millis() - cardTime >= CARD_TIMEOUT) {
     Serial.println("Timeout - gate closed");
     setFree();
   }
+  if (exitOpen && millis() - exitStart >= exitDuration) {
+    exitOpen = false;
+    Serial.println("Exit done - gate closed");
+    setGate(GATE_CLOSED);
+    showStatus("GO");
+  }
 }
 
-// קלפי תפוסה: נורה דולקת, WAIT, מונה עולה
-void setBusy(int w) {
+// פתיחה ליציאה
+void openForExit(unsigned long duration) {
+  exitOpen = true;
+  exitStart = millis();
+  exitDuration = duration;
+  setGate(GATE_OPEN);
+  Serial.println("Gate open for exit");
+}
+
+// קלפי תפוסה
+void setBusy() {
   state = BUSY;
+  exitOpen = false;
+  noCard = false;
   stopAlert();
   voters++;
   digitalWrite(LED_PIN, HIGH);
-  gateAngle = GATE_CLOSED;
+  setGate(GATE_CLOSED);
   showStatus("WAIT");
   Serial.print("Voter inside, weight=");
-  Serial.print(w);
-  Serial.print(", voters=");
+  Serial.print(weight);
+  Serial.print(" voters=");
   Serial.println(voters);
 }
 
-// קלפי פנויה: נורה כבויה, GO
+// קלפי פנויה
 void setFree() {
   state = FREE;
   stopAlert();
   digitalWrite(LED_PIN, LOW);
-  gateAngle = GATE_CLOSED;
+  setGate(GATE_CLOSED);
   showStatus("GO");
 }
 
-// התחלת התראה מהבהבת
+// התראה
 void startAlert() {
   alertOn = true;
   alertStart = millis();
   lastBlink = millis();
   ledOn = true;
   digitalWrite(LED_PIN, HIGH);
-  showStatus("GO!");
+  showText("GO!", state == CARD_OK ? "Please enter" : "Next voter");
 }
 
-// הבהוב הנורה בזמן ההתראה
+// הבהוב
 void blinkAlert() {
-  if (!alertOn) {
-    return;
-  }
+  if (!alertOn) return;
   if (millis() - alertStart >= ALERT_TIME) {
     stopAlert();
-    showStatus("GO");
+    if (state == CARD_OK) showText("Card OK", "Please enter");
+    else showStatus("GO");
     Serial.println("Alert ended");
     return;
   }
@@ -182,39 +233,39 @@ void blinkAlert() {
   }
 }
 
-// עצירת ההתראה
+// סיום הבהוב
 void stopAlert() {
-  if (alertOn) {
-    alertOn = false;
-    digitalWrite(LED_PIN, LOW);
-  }
+  if (!alertOn) return;
+  alertOn = false;
+  ledOn = false;
+  digitalWrite(LED_PIN, LOW);
 }
 
-// פולס לסרוו כל 20 מילישניות
-void moveServo() {
-  if (millis() - lastPulse < 20) {
-    return;
-  }
+// הזזת מחסום
+void setGate(int target) {
+  gateTarget = target;
+}
+
+// פולס לסרוו כל 20 מילישניות (בלי ספריית סרוו כי היא מתנגשת עם השלט בטינקרקד)
+void moveGate() {
+  if (millis() - lastPulse < 20) return;
   lastPulse = millis();
-  int pulse = map(gateAngle, 0, 180, 544, 2400);
+  int angle = gateTarget == GATE_OPEN ? ANGLE_OPEN : ANGLE_CLOSED;
+  int pulse = map(angle, 0, 180, 544, 2400);
   digitalWrite(SERVO_PIN, HIGH);
   delayMicroseconds(pulse);
   digitalWrite(SERVO_PIN, LOW);
 }
 
-// מצב הקלפי בשורה 1, מספר בוחרים בשורה 2
+// מסך רגיל
 void showStatus(String s) {
-  lcd.clear();
-  lcd.print("Ballot: ");
-  lcd.print(s);
-  lcd.setCursor(0, 1);
-  lcd.print("Voters: ");
-  lcd.print(voters);
+  showText("Ballot: " + s, "Voters: " + String(voters));
 }
 
-// הצגת שתי שורות טקסט
+// כתיבה למסך
 void showText(String line1, String line2) {
   lcd.clear();
+  lcd.setCursor(0, 0);
   lcd.print(line1);
   lcd.setCursor(0, 1);
   lcd.print(line2);
