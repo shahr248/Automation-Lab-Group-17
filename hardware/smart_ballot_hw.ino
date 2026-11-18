@@ -1,12 +1,4 @@
-// מערכת קלפי חכמה - מעבדת אוטומציה 1
-// גרסת חומרה (ארדואינו אמיתי)
-// רכיבים: מקלט שלט IR, חיישן משקל עם HX711, מסך LCD עם I2C, מנוע סרוו, נורה וכפתור
-
-// ספריות להתקנה (Library Manager):
-// IRremote של shirriff / ArminJo
-// HX711 של Bogdan Necula
-// LiquidCrystal I2C של Frank de Brabander
-// Servo של Arduino
+// קלפי חכמה - מעבדת אוטומציה 1
 #include <Wire.h>
 #include <IRremote.hpp>
 #include <HX711.h>
@@ -20,36 +12,32 @@
 #define LED_PIN 7
 #define SCALE_SCK A2
 #define SCALE_DT A3
-// המסך מחובר ל-A4 (SDA) ול-A5 (SCL)
 
-// כיול המשקל - לשנות אחרי בדיקה עם משקל ידוע
+// משקל
 #define CAL_FACTOR 420.0
-// ספי משקל בגרמים
 #define ENTER_LEVEL 500
 #define EXIT_LEVEL 300
 
-// הכפתור מחובר בין פין 2 למינוס, עם הנגד הפנימי של הארדואינו - לחיצה = LOW
 #define BTN_PRESSED LOW
 
-// המנוע הוא 360 מעלות: 90 = עצירה, מעל 90 לכיוון אחד, מתחת לכיוון השני
+// סרוו 360 - 90 זה עצירה
 #define SERVO_STOP 90
 #define SERVO_OPEN 120
 #define SERVO_CLOSE 60
 #define GATE_MOVE_TIME 600
 
-// זמנים במילישניות
+// זמנים
 #define CARD_TIMEOUT 10000
 #define EXIT_TIME 5000
 #define ALERT_TIME 3000
 #define BLINK_TIME 300
 #define WEIGHT_EVERY 200
 
-// מצבי הקלפי
+// מצבים
 #define FREE 0
 #define CARD_OK 1
 #define BUSY 2
 
-// מצבי המחסום
 #define GATE_CLOSED 0
 #define GATE_OPEN 1
 
@@ -84,7 +72,7 @@ void setup() {
 
   scale.begin(SCALE_DT, SCALE_SCK);
   scale.set_scale(CAL_FACTOR);
-  scale.tare();  // איפוס - לא לעמוד על המשקל בהדלקה
+  scale.tare();
 
   gate.attach(SERVO_PIN);
   gate.write(SERVO_STOP);
@@ -102,7 +90,7 @@ void loop() {
   moveGate();
 }
 
-// מוצא את כתובת המסך (0x27 או 0x3F) ומדליק אותו
+// הדלקת המסך
 void startLcd() {
   Wire.begin();
   byte addr = 0x27;
@@ -115,14 +103,14 @@ void startLcd() {
   Serial.println(addr, HEX);
 }
 
-// קורא לחיצה בשלט (במקום כרטיס) ופותח את המחסום אם הקלפי פנויה
+// שלט במקום כרטיס
 void readCard() {
   if (!IrReceiver.decode()) return;
   int card = IrReceiver.decodedIRData.command;
   bool noise = IrReceiver.decodedIRData.protocol == UNKNOWN;
   bool repeat = IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT;
   IrReceiver.resume();
-  if (noise || repeat) return;  // מתעלמים מרעש ומלחיצה ארוכה
+  if (noise || repeat) return;
 
   if (state == FREE) {
     Serial.println("Card " + String(card) + " OK - gate open");
@@ -137,7 +125,7 @@ void readCard() {
   }
 }
 
-// בודק את המשקל כל 200 מילישניות ומעדכן אם מישהו נכנס או יצא
+// בדיקת משקל - כניסה ויציאה
 void readWeight() {
   if (millis() - lastWeight < WEIGHT_EVERY) return;
   if (!scale.is_ready()) return;
@@ -155,7 +143,7 @@ void readWeight() {
   }
 }
 
-// כפתור הצוות - מפעיל התראה רק כשהקלפי פנויה
+// כפתור צוות
 void readButton() {
   int btn = digitalRead(BTN_PIN);
   if (btn == BTN_PRESSED && lastBtn != BTN_PRESSED) {
@@ -169,7 +157,7 @@ void readButton() {
   lastBtn = btn;
 }
 
-// סוגר את המחסום אם עבר הזמן ואף אחד לא נכנס, או אחרי שהמצביע יצא
+// סגירת מחסום אחרי זמן
 void checkTimeout() {
   if (state == CARD_OK && millis() - cardTime >= CARD_TIMEOUT) {
     Serial.println("Timeout - gate closed");
@@ -183,7 +171,7 @@ void checkTimeout() {
   }
 }
 
-// פותח את המחסום ליציאה, והוא נסגר לבד אחרי 5 שניות
+// פתיחה ליציאה
 void openForExit() {
   exitOpen = true;
   exitStart = millis();
@@ -192,7 +180,7 @@ void openForExit() {
   Serial.println("Gate open for exit");
 }
 
-// מישהו בפנים
+// קלפי תפוסה
 void setBusy() {
   state = BUSY;
   exitOpen = false;
@@ -207,7 +195,7 @@ void setBusy() {
   Serial.println(voters);
 }
 
-// הקלפי פנויה
+// קלפי פנויה
 void setFree() {
   state = FREE;
   stopAlert();
@@ -216,7 +204,7 @@ void setFree() {
   showStatus("GO");
 }
 
-// מתחיל הבהוב ו-GO! על המסך
+// התראה
 void startAlert() {
   alertOn = true;
   alertStart = millis();
@@ -226,7 +214,7 @@ void startAlert() {
   showText("GO!", "Next voter");
 }
 
-// מהבהב בלי לעצור את התוכנית, ונגמר אחרי 3 שניות
+// הבהוב
 void blinkAlert() {
   if (!alertOn) return;
   if (millis() - alertStart >= ALERT_TIME) {
@@ -242,7 +230,7 @@ void blinkAlert() {
   }
 }
 
-// עוצר הבהוב
+// סיום הבהוב
 void stopAlert() {
   if (!alertOn) return;
   alertOn = false;
@@ -250,7 +238,7 @@ void stopAlert() {
   digitalWrite(LED_PIN, LOW);
 }
 
-// מתחיל להזיז את המחסום לפתוח או סגור
+// הזזת מחסום
 void setGate(int target) {
   if (target == gatePos) return;
   gateTarget = target;
@@ -258,7 +246,7 @@ void setGate(int target) {
   gate.write(target == GATE_OPEN ? SERVO_OPEN : SERVO_CLOSE);
 }
 
-// עוצר את המנוע כשהמחסום הגיע
+// עצירת המנוע
 void moveGate() {
   if (gatePos == gateTarget) return;
   if (millis() - gateStart >= GATE_MOVE_TIME) {
@@ -267,12 +255,12 @@ void moveGate() {
   }
 }
 
-// מסך רגיל: מצב הקלפי ומספר המצביעים
+// מסך רגיל
 void showStatus(String s) {
   showText("Ballot: " + s, "Voters: " + String(voters));
 }
 
-// כותב שתי שורות למסך
+// כתיבה למסך
 void showText(String line1, String line2) {
   lcd->clear();
   lcd->setCursor(0, 0);
