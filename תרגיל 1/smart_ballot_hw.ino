@@ -333,14 +333,15 @@ void readDistance() {
   }
 }
 
-// אין כרגע הודעה אחרת על המסך
+// מותר להציג הודעת כניסה (גם אם מישהו עלה בלי כרטיס)
 bool idle() {
-  return state == FREE && !noCard && !alertOn && !exitOpen;
+  return state == FREE && !alertOn && !exitOpen;
 }
 
 // מסך המתנה - אם מישהו בכניסה מבקשים כרטיס
 void showIdle() {
   if (nearDoor) showText("Welcome!", "Scan your card");
+  else if (noCard) showText("No card!", "Please exit");
   else showStatus("GO");
 }
 
