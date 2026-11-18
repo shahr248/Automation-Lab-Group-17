@@ -239,7 +239,7 @@ void startAlert() {
   lastBlink = millis();
   ledOn = true;
   digitalWrite(LED_PIN, HIGH);
-  showText("GO!", "Next voter");
+  showText("GO!", state == CARD_OK ? "Please enter" : "Next voter");
 }
 
 // הבהוב
