@@ -158,12 +158,13 @@ void readWeight() {
   }
 }
 
-// כפתור צוות
+// כפתור צוות - עובד כל עוד אין מישהו בפנים
 void readButton() {
   int btn = digitalRead(BTN_PIN);
   if (btn == BTN_PRESSED && lastBtn != BTN_PRESSED) {
-    if (state == FREE) {
+    if (state != BUSY) {
       Serial.println("Alert: GO!");
+      if (state == CARD_OK) cardTime = millis();  // עוד זמן להיכנס
       startAlert();
     } else {
       Serial.println("Alert ignored - booth busy");
@@ -246,7 +247,8 @@ void blinkAlert() {
   if (!alertOn) return;
   if (millis() - alertStart >= ALERT_TIME) {
     stopAlert();
-    showStatus("GO");
+    if (state == CARD_OK) showText("Card OK", "Please enter");
+    else showStatus("GO");
     Serial.println("Alert ended");
     return;
   }
