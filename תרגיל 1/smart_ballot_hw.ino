@@ -13,6 +13,8 @@
 #define LED_PIN 7
 #define SCALE_SCK A2
 #define SCALE_DT A3
+#define TRIG_PIN 8
+#define ECHO_PIN 9
 
 // משקל
 #define CAL_FACTOR 420.0
@@ -21,11 +23,16 @@
 
 #define BTN_PRESSED LOW
 
+// חיישן מרחק בכניסה (ס"מ)
+#define NEAR_CM 50
+#define FAR_CM 70
+
 // סרוו 360 - 90 זה עצירה
 #define SERVO_STOP 90
 #define SERVO_OPEN 120
 #define SERVO_CLOSE 60
 #define GATE_MOVE_TIME 600
+#define RAMP_TIME 200  // האצה הדרגתית כדי שהמנוע לא יפיל את המתח
 
 // זמנים
 #define CARD_TIMEOUT 10000
@@ -34,6 +41,7 @@
 #define ALERT_TIME 3000
 #define BLINK_TIME 300
 #define WEIGHT_EVERY 200
+#define DIST_EVERY 250
 
 // מצבים
 #define FREE 0
@@ -66,12 +74,18 @@ bool exitOpen = false;
 bool noCard = false;
 unsigned long exitStart = 0;
 unsigned long exitDuration = EXIT_TIME;
+bool nearDoor = false;
+String shown1 = "";
+String shown2 = "";
+unsigned long lastDist = 0;
 
 void setup() {
   Serial.begin(9600);
   pinMode(BTN_PIN, INPUT_PULLUP);
   pinMode(OPEN_BTN_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
   startLcd();
 
@@ -91,6 +105,7 @@ void setup() {
 void loop() {
   readCard();
   readWeight();
+  readDistance();
   readButton();
   readOpenButton();
   checkTimeout();
@@ -149,7 +164,7 @@ void readWeight() {
     showText("No card!", "Please exit");
   } else if (state == FREE && noCard && weight < EXIT_LEVEL) {
     noCard = false;
-    showStatus("GO");
+    showIdle();
   } else if (state == BUSY && weight < EXIT_LEVEL) {
     Serial.print("Voter left, weight=");
     Serial.println(weight);
@@ -195,7 +210,7 @@ void checkTimeout() {
     exitOpen = false;
     Serial.println("Exit done - gate closed");
     setGate(GATE_CLOSED);
-    showStatus("GO");
+    showIdle();
   }
 }
 
@@ -230,7 +245,7 @@ void setFree() {
   stopAlert();
   digitalWrite(LED_PIN, LOW);
   setGate(GATE_CLOSED);
-  showStatus("GO");
+  showIdle();
 }
 
 // התראה
@@ -249,7 +264,7 @@ void blinkAlert() {
   if (millis() - alertStart >= ALERT_TIME) {
     stopAlert();
     if (state == CARD_OK) showText("Card OK", "Please enter");
-    else showStatus("GO");
+    else showIdle();
     Serial.println("Alert ended");
     return;
   }
@@ -273,20 +288,60 @@ void setGate(int target) {
   if (target == gateTarget) return;
   // אם המחסום באמצע תנועה, חוזרים רק את הדרך שכבר עבר
   if (moving) moveTime = millis() - gateStart;
-  else moveTime = GATE_MOVE_TIME;
+  else moveTime = GATE_MOVE_TIME + RAMP_TIME / 2;
   gateTarget = target;
   gateStart = millis();
   moving = true;
-  gate.write(target == GATE_OPEN ? SERVO_OPEN : SERVO_CLOSE);
+  gate.write(SERVO_STOP);
 }
 
-// עצירת המנוע
+// תנועת המנוע ועצירה
 void moveGate() {
   if (!moving) return;
-  if (millis() - gateStart >= moveTime) {
+  unsigned long t = millis() - gateStart;
+  if (t >= moveTime) {
     gate.write(SERVO_STOP);
     moving = false;
+    refreshLcd();  // המנוע יכול לשבש את המסך, מציירים מחדש
+    return;
   }
+  int full = gateTarget == GATE_OPEN ? SERVO_OPEN : SERVO_CLOSE;
+  if (t < RAMP_TIME) gate.write(SERVO_STOP + (full - SERVO_STOP) * (long)t / RAMP_TIME);
+  else gate.write(full);
+}
+
+// חיישן מרחק - בוחר שעומד בכניסה
+void readDistance() {
+  if (millis() - lastDist < DIST_EVERY) return;
+  lastDist = millis();
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  unsigned long t = pulseIn(ECHO_PIN, HIGH, 25000);
+  int cm = (t == 0) ? 999 : t / 58;  // אין הד = אין אף אחד
+
+  if (!nearDoor && cm < NEAR_CM) {
+    nearDoor = true;
+    Serial.println("Voter at door, distance=" + String(cm) + "cm");
+    if (idle()) showIdle();
+  } else if (nearDoor && cm > FAR_CM) {
+    nearDoor = false;
+    Serial.println("Door clear");
+    if (idle()) showIdle();
+  }
+}
+
+// אין כרגע הודעה אחרת על המסך
+bool idle() {
+  return state == FREE && !noCard && !alertOn && !exitOpen;
+}
+
+// מסך המתנה - אם מישהו בכניסה מבקשים כרטיס
+void showIdle() {
+  if (nearDoor) showText("Welcome!", "Scan your card");
+  else showStatus("GO");
 }
 
 // מסך רגיל
@@ -296,9 +351,18 @@ void showStatus(String s) {
 
 // כתיבה למסך
 void showText(String line1, String line2) {
+  shown1 = line1;
+  shown2 = line2;
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->print(line1);
   lcd->setCursor(0, 1);
   lcd->print(line2);
+}
+
+// אתחול המסך מחדש וכתיבת ההודעה האחרונה
+void refreshLcd() {
+  lcd->init();
+  lcd->backlight();
+  showText(shown1, shown2);
 }
