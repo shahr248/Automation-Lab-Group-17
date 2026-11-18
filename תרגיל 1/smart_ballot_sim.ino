@@ -10,6 +10,8 @@
 #define SERVO_PIN 5
 #define LED_PIN 7
 #define FSR_PIN A0
+#define TRIG_PIN A1
+#define ECHO_PIN A2
 
 // משקל (0-1023)
 #define ENTER_LEVEL 300
@@ -23,6 +25,10 @@
 #define ANGLE_CLOSED 0
 #define ANGLE_OPEN 90
 
+// חיישן מרחק בכניסה (ס"מ)
+#define NEAR_CM 50
+#define FAR_CM 70
+
 // זמנים
 #define CARD_TIMEOUT 10000
 #define EXIT_TIME 5000
@@ -30,6 +36,7 @@
 #define ALERT_TIME 3000
 #define BLINK_TIME 300
 #define WEIGHT_EVERY 200
+#define DIST_EVERY 250
 
 // מצבים
 #define FREE 0
@@ -58,6 +65,8 @@ bool exitOpen = false;
 bool noCard = false;
 unsigned long exitStart = 0;
 unsigned long exitDuration = EXIT_TIME;
+bool nearDoor = false;
+unsigned long lastDist = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -65,6 +74,8 @@ void setup() {
   pinMode(OPEN_BTN_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   pinMode(SERVO_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
   startLcd();
 
@@ -77,6 +88,7 @@ void setup() {
 void loop() {
   readCard();
   readWeight();
+  readDistance();
   readButton();
   readOpenButton();
   checkTimeout();
@@ -122,7 +134,7 @@ void readWeight() {
     showText("No card!", "Please exit");
   } else if (state == FREE && noCard && weight < EXIT_LEVEL) {
     noCard = false;
-    showStatus("GO");
+    showIdle();
   } else if (state == BUSY && weight < EXIT_LEVEL) {
     Serial.print("Voter left, weight=");
     Serial.println(weight);
@@ -168,7 +180,7 @@ void checkTimeout() {
     exitOpen = false;
     Serial.println("Exit done - gate closed");
     setGate(GATE_CLOSED);
-    showStatus("GO");
+    showIdle();
   }
 }
 
@@ -203,7 +215,7 @@ void setFree() {
   stopAlert();
   digitalWrite(LED_PIN, LOW);
   setGate(GATE_CLOSED);
-  showStatus("GO");
+  showIdle();
 }
 
 // התראה
@@ -222,7 +234,7 @@ void blinkAlert() {
   if (millis() - alertStart >= ALERT_TIME) {
     stopAlert();
     if (state == CARD_OK) showText("Card OK", "Please enter");
-    else showStatus("GO");
+    else showIdle();
     Serial.println("Alert ended");
     return;
   }
@@ -255,6 +267,40 @@ void moveGate() {
   digitalWrite(SERVO_PIN, HIGH);
   delayMicroseconds(pulse);
   digitalWrite(SERVO_PIN, LOW);
+}
+
+// חיישן מרחק - בוחר שעומד בכניסה
+void readDistance() {
+  if (millis() - lastDist < DIST_EVERY) return;
+  lastDist = millis();
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  unsigned long t = pulseIn(ECHO_PIN, HIGH, 25000);
+  int cm = (t == 0) ? 999 : t / 58;  // אין הד = אין אף אחד
+
+  if (!nearDoor && cm < NEAR_CM) {
+    nearDoor = true;
+    Serial.println("Voter at door, distance=" + String(cm) + "cm");
+    if (idle()) showIdle();
+  } else if (nearDoor && cm > FAR_CM) {
+    nearDoor = false;
+    Serial.println("Door clear");
+    if (idle()) showIdle();
+  }
+}
+
+// אין כרגע הודעה אחרת על המסך
+bool idle() {
+  return state == FREE && !noCard && !alertOn && !exitOpen;
+}
+
+// מסך המתנה - אם מישהו בכניסה מבקשים כרטיס
+void showIdle() {
+  if (nearDoor) showText("Welcome!", "Scan your card");
+  else showStatus("GO");
 }
 
 // מסך רגיל
