@@ -1,7 +1,11 @@
 # מעבדת אוטומציה - קבוצה 17
 
-AlonGoldman
-ShaharBenNir
+## חברי הקבוצה
+
+- Alon Goldman
+- Shahar Ben Nir
+- Annie Ben Yehuda
+- Roni Avrahami
 
 ## תרגיל 1 - קלפי חכמה
 
